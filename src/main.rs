@@ -1,6 +1,7 @@
 use actix_files as fs;
 use actix_service::Service;
-// use actix_web::body::{Body, ResponseBody};
+use actix_web::body::Body;
+use actix_web::body::MessageBody;
 use actix_web::body::ResponseBody;
 use actix_web::{middleware, web, App, HttpResponse, HttpServer, Responder};
 use futures::future::FutureExt;
@@ -19,17 +20,38 @@ async fn main() -> std::io::Result<()> {
     env_logger::init();
     HttpServer::new(|| {
         App::new()
-            .wrap(middleware::Compress::default())
-            .wrap(middleware::Logger::default())
             .wrap_fn(|req, srv| {
                 println!("Hi from start. You requested: {}", req.path());
                 srv.call(req).map(|res| {
-                    dbg!(&res);
-                    Ok(res
-                        .unwrap()
-                        .map_body(move |_, body| ResponseBody::Body("test")))
+                    // dbg!(&res);
+                    Ok(res.unwrap().map_body(move |_, body| {
+                        match body {
+                            ResponseBody::Body(b) => {
+                                // println!("{:?}", &b);
+                                match &b {
+                                    Body::None => Body::None,
+                                    Body::Empty => Body::Empty,
+                                    Body::Bytes(raw) => {
+                                        println!("Content {:?}", raw);
+                                        dbg!(raw);
+                                        Body::Empty
+                                    }
+                                    Body::Message(raw) => {
+                                        // println!("message {:?}", raw);
+                                        Body::Empty
+                                    }
+                                };
+                                ResponseBody::Body(b)
+                            }
+                            ResponseBody::Other(b) => ResponseBody::Other(b),
+                        };
+
+                        ResponseBody::Body("test")
+                    }))
                 })
             })
+            .wrap(middleware::Compress::default())
+            .wrap(middleware::Logger::default())
             .route("/", web::get().to(index))
             .route("/again", web::get().to(index2))
             .service(fs::Files::new("/files", ".").show_files_listing())
