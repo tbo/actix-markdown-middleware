@@ -20,6 +20,21 @@ async fn main() -> std::io::Result<()> {
     env_logger::init();
     HttpServer::new(|| {
         App::new()
+            // .wrap_fn(|req, srv| {
+            //     let fut = srv.call(req);
+            //     async {
+            //         let mut res = fut.await?;
+            //         dbg!(&res);
+            //         // res.headers_mut()
+            //         //     .insert(CONTENT_TYPE, HeaderValue::from_static("text/plain"));
+            //         // Ok(res)
+            //         let new_res = res.map_body(|_head, body| {
+            //             println!("{:?}", body.wait());
+            //             ResponseBody::Body(Body::Message(Box::new("fredbob")))
+            //         });
+            //         Ok(new_res)
+            //     }
+            // })
             .wrap_fn(|req, srv| {
                 println!("Hi from start. You requested: {}", req.path());
                 srv.call(req).map(|res| {
