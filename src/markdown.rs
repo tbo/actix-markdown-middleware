@@ -5,7 +5,7 @@ use std::task::{Context, Poll};
 use actix_http::http::HeaderValue;
 use actix_service::{Service, Transform};
 use actix_web::body::{BodySize, MessageBody, ResponseBody};
-use actix_web::{dev::ServiceRequest, dev::ServiceResponse, Error};
+use actix_web::{dev::ServiceRequest, dev::ServiceResponse, http, Error};
 use bytes::{Bytes, BytesMut};
 use futures::future::{ok, Ready};
 use pulldown_cmark::{html, Options, Parser};
@@ -61,12 +61,12 @@ where
     }
 }
 
-fn get_buffer_with_capacity(capacity: BodySize) -> Vec<u8> {
+fn get_buffer_with_capacity(capacity: BodySize) -> BytesMut {
     use BodySize::*;
     match capacity {
-        Sized(capacity) => Vec::with_capacity(capacity),
-        Sized64(capacity) => Vec::with_capacity(capacity as usize),
-        _ => Vec::new(),
+        Sized(capacity) => BytesMut::with_capacity(capacity),
+        Sized64(capacity) => BytesMut::with_capacity(capacity as usize),
+        _ => BytesMut::new(),
     }
 }
 
@@ -89,19 +89,21 @@ where
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let res = futures::ready!(self.project().fut.poll(cx));
 
-        Poll::Ready(res.map(|res| {
+        Poll::Ready(res.map(|mut res| {
             if res
                 .headers()
                 .get("content-type")
                 .map(|header| header.eq(&HeaderValue::from_static("text/markdown")))
                 .unwrap_or(false)
             {
-                dbg!(&res);
+                res.headers_mut().insert(
+                    http::header::CONTENT_TYPE,
+                    HeaderValue::from_static("text/html"),
+                );
                 return res.map_body(move |_, body| {
                     let size = body.size();
                     ResponseBody::Body(MarkdownResponse::Active(MarkdownBody {
                         body,
-                        body_accum: BytesMut::new(),
                         buffer: get_buffer_with_capacity(size),
                     }))
                 });
@@ -113,8 +115,7 @@ where
 
 pub struct MarkdownBody<B> {
     body: ResponseBody<B>,
-    body_accum: BytesMut,
-    buffer: Vec<u8>,
+    buffer: BytesMut,
 }
 
 impl<B: MessageBody> MarkdownBody<B> {
@@ -142,18 +143,21 @@ impl<B: MessageBody> MessageBody for MarkdownResponse<B> {
         use ConditionalResponse::*;
         match self {
             Inactive(body) => body.poll_next(cx),
-            Active(body) => match body.body.poll_next(cx) {
+            Active(response_body) => match response_body.body.poll_next(cx) {
                 Poll::Ready(Some(Ok(chunk))) => {
-                    body.body_accum.extend_from_slice(&chunk);
-                    body.buffer.extend_from_slice(&chunk);
-                    if !body.is_complete() {
+                    response_body.buffer.extend_from_slice(&chunk);
+                    if !response_body.is_complete() {
+                        cx.waker().clone().wake();
                         return Poll::Pending;
                     }
-                    let s = &String::from_utf8_lossy(&body.buffer);
+                    let s = &String::from_utf8_lossy(&response_body.buffer);
                     let parser = Parser::new_ext(s, Options::empty());
                     let mut html_output: String = String::with_capacity(s.len() * 3 / 2);
+                    html_output.push_str(
+                        "<!DOCTYPE html><html><head><title>Markdown Page</title></head><body>",
+                    );
                     html::push_html(&mut html_output, parser);
-                    dbg!(&html_output);
+                    html_output.push_str("</body></html>");
                     Poll::Ready(Some(Ok(Bytes::from(html_output))))
                 }
                 Poll::Ready(Some(Err(e))) => Poll::Ready(Some(Err(e))),

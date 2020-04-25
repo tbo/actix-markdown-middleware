@@ -18,4 +18,3 @@ futures = "0.3.4"
 pulldown-cmark = "0.7.0"
 bytes = "0.5.4"
 pin-project = "0.4.8"
-
