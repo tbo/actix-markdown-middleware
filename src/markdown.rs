@@ -1,3 +1,5 @@
+extern crate askama;
+use askama::Template;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -9,6 +11,13 @@ use actix_web::{dev::ServiceRequest, dev::ServiceResponse, http, Error};
 use bytes::{Bytes, BytesMut};
 use futures::future::{ok, Ready};
 use pulldown_cmark::{html, Options, Parser};
+
+#[derive(Template)]
+#[template(path = "header.html")]
+
+struct HeaderTemplate<'a> {
+    title: &'a str,
+}
 
 pub enum ConditionalResponse<A, I> {
     Active(A),
@@ -153,9 +162,8 @@ impl<B: MessageBody> MessageBody for MarkdownResponse<B> {
                     let s = &String::from_utf8_lossy(&response_body.buffer);
                     let parser = Parser::new_ext(s, Options::empty());
                     let mut html_output: String = String::with_capacity(s.len() * 3 / 2);
-                    html_output.push_str(
-                        "<!DOCTYPE html><html><head><title>Markdown Page</title></head><body>",
-                    );
+                    let hello = HeaderTemplate { title: "world" }; // instantiate your struct
+                    html_output.push_str(&hello.render().unwrap());
                     html::push_html(&mut html_output, parser);
                     html_output.push_str("</body></html>");
                     Poll::Ready(Some(Ok(Bytes::from(html_output))))
