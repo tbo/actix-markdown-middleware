@@ -6,7 +6,7 @@ use std::task::{Context, Poll};
 
 use actix_http::http::HeaderValue;
 use actix_service::{Service, Transform};
-use actix_web::body::{BodySize, MessageBody, ResponseBody};
+use actix_web::body::{Body, BodySize, MessageBody, ResponseBody};
 use actix_web::{dev::ServiceRequest, dev::ServiceResponse, http, Error};
 use bytes::{Bytes, BytesMut};
 use futures::future::{ok, Ready};
@@ -24,13 +24,6 @@ struct HeaderTemplate<'a> {
 
 struct FooterTemplate {}
 
-pub enum ConditionalResponse<A, I> {
-    Active(A),
-    Inactive(I),
-}
-
-type MarkdownResponse<B> = ConditionalResponse<MarkdownBody<B>, ResponseBody<B>>;
-
 pub struct Transformer;
 
 impl<S: 'static, B> Transform<S> for Transformer
@@ -39,7 +32,7 @@ where
     B: MessageBody + 'static,
 {
     type Request = ServiceRequest;
-    type Response = ServiceResponse<MarkdownResponse<B>>;
+    type Response = ServiceResponse<B>;
     type Error = Error;
     type InitError = ();
     type Transform = MarkdownTransformerMiddleware<S>;
@@ -58,10 +51,10 @@ impl<S, B> Service for MarkdownTransformerMiddleware<S>
 where
     S: Service<Request = ServiceRequest, Response = ServiceResponse<B>, Error = Error>,
     S::Future: 'static,
-    B: MessageBody,
+    B: MessageBody + 'static,
 {
     type Request = ServiceRequest;
-    type Response = ServiceResponse<MarkdownResponse<B>>;
+    type Response = ServiceResponse<B>;
     type Error = Error;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>>>>;
 
@@ -88,14 +81,14 @@ where
                 );
                 return Ok(res.map_body(move |_, body| {
                     let size = body.size();
-                    ResponseBody::Body(MarkdownResponse::Active(MarkdownBody {
+                    ResponseBody::Other(Body::Message(Box::new(MarkdownBody {
                         body,
                         path,
                         buffer: get_buffer_with_capacity(size),
-                    }))
+                    })))
                 }));
             }
-            Ok(res.map_body(move |_, body| ResponseBody::Body(MarkdownResponse::Inactive(body))))
+            Ok(res)
         })
     }
 }
@@ -127,42 +120,32 @@ impl<B: MessageBody> MarkdownBody<B> {
     }
 }
 
-impl<B: MessageBody> MessageBody for MarkdownResponse<B> {
+impl<B: MessageBody> MessageBody for MarkdownBody<B> {
     fn size(&self) -> BodySize {
-        use ConditionalResponse::*;
-        match self {
-            Active(_body) => BodySize::Stream,
-            Inactive(body) => body.size(),
-        }
+        BodySize::Stream
     }
 
     fn poll_next(&mut self, cx: &mut Context<'_>) -> Poll<Option<Result<Bytes, Error>>> {
-        use ConditionalResponse::*;
-        match self {
-            Inactive(body) => body.poll_next(cx),
-            Active(response_body) => match response_body.body.poll_next(cx) {
-                Poll::Ready(Some(Ok(chunk))) => {
-                    response_body.buffer.extend_from_slice(&chunk);
-                    if !response_body.is_complete() {
-                        cx.waker().clone().wake();
-                        return Poll::Pending;
-                    }
-                    let s = &String::from_utf8_lossy(&response_body.buffer);
-                    let parser = Parser::new_ext(s, Options::empty());
-                    let mut html_output: String = String::with_capacity(s.len() * 3 / 2);
-                    let header = HeaderTemplate {
-                        title: &response_body.path,
-                    };
-                    let footer = FooterTemplate {};
-                    html_output.push_str(&header.render().unwrap());
-                    html::push_html(&mut html_output, parser);
-                    html_output.push_str(&footer.render().unwrap());
-                    Poll::Ready(Some(Ok(Bytes::from(html_output))))
+        match self.body.poll_next(cx) {
+            Poll::Ready(Some(Ok(chunk))) => {
+                self.buffer.extend_from_slice(&chunk);
+                if !self.is_complete() {
+                    cx.waker().clone().wake();
+                    return Poll::Pending;
                 }
-                Poll::Ready(Some(Err(e))) => Poll::Ready(Some(Err(e))),
-                Poll::Ready(None) => Poll::Ready(None),
-                Poll::Pending => Poll::Pending,
-            },
+                let s = &String::from_utf8_lossy(&self.buffer);
+                let parser = Parser::new_ext(s, Options::empty());
+                let mut html_output: String = String::with_capacity(s.len() * 3 / 2);
+                let header = HeaderTemplate { title: &self.path };
+                let footer = FooterTemplate {};
+                html_output.push_str(&header.render().unwrap());
+                html::push_html(&mut html_output, parser);
+                html_output.push_str(&footer.render().unwrap());
+                Poll::Ready(Some(Ok(Bytes::from(html_output))))
+            }
+            Poll::Ready(Some(Err(e))) => Poll::Ready(Some(Err(e))),
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
         }
     }
 }
