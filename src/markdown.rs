@@ -19,6 +19,11 @@ struct HeaderTemplate<'a> {
     title: &'a str,
 }
 
+#[derive(Template)]
+#[template(path = "footer.html")]
+
+struct FooterTemplate {}
+
 pub enum ConditionalResponse<A, I> {
     Active(A),
     Inactive(I),
@@ -65,6 +70,7 @@ where
     }
 
     fn call(&mut self, req: ServiceRequest) -> Self::Future {
+        let path = req.path().to_owned();
         let fut = self.service.call(req);
 
         Box::pin(async move {
@@ -84,6 +90,7 @@ where
                     let size = body.size();
                     ResponseBody::Body(MarkdownResponse::Active(MarkdownBody {
                         body,
+                        path,
                         buffer: get_buffer_with_capacity(size),
                     }))
                 }));
@@ -104,6 +111,7 @@ fn get_buffer_with_capacity(capacity: BodySize) -> BytesMut {
 
 pub struct MarkdownBody<B> {
     body: ResponseBody<B>,
+    path: String,
     buffer: BytesMut,
 }
 
@@ -142,10 +150,13 @@ impl<B: MessageBody> MessageBody for MarkdownResponse<B> {
                     let s = &String::from_utf8_lossy(&response_body.buffer);
                     let parser = Parser::new_ext(s, Options::empty());
                     let mut html_output: String = String::with_capacity(s.len() * 3 / 2);
-                    let hello = HeaderTemplate { title: "world" };
-                    html_output.push_str(&hello.render().unwrap());
+                    let header = HeaderTemplate {
+                        title: &response_body.path,
+                    };
+                    let footer = FooterTemplate {};
+                    html_output.push_str(&header.render().unwrap());
                     html::push_html(&mut html_output, parser);
-                    html_output.push_str("</body></html>");
+                    html_output.push_str(&footer.render().unwrap());
                     Poll::Ready(Some(Ok(Bytes::from(html_output))))
                 }
                 Poll::Ready(Some(Err(e))) => Poll::Ready(Some(Err(e))),
