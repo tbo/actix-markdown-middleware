@@ -81,11 +81,11 @@ where
                 );
                 return Ok(res.map_body(move |_, body| {
                     let size = body.size();
-                    ResponseBody::Other(Body::Message(Box::new(MarkdownBody {
+                    ResponseBody::Other(Body::from_message(MarkdownBody {
                         body,
                         path,
                         buffer: get_buffer_with_capacity(size),
-                    })))
+                    }))
                 }));
             }
             Ok(res)
@@ -126,26 +126,23 @@ impl<B: MessageBody> MessageBody for MarkdownBody<B> {
     }
 
     fn poll_next(&mut self, cx: &mut Context<'_>) -> Poll<Option<Result<Bytes, Error>>> {
-        match self.body.poll_next(cx) {
-            Poll::Ready(Some(Ok(chunk))) => {
-                self.buffer.extend_from_slice(&chunk);
-                if !self.is_complete() {
-                    cx.waker().clone().wake();
-                    return Poll::Pending;
-                }
-                let s = &String::from_utf8_lossy(&self.buffer);
-                let parser = Parser::new_ext(s, Options::empty());
-                let mut html_output: String = String::with_capacity(s.len() * 3 / 2);
-                let header = HeaderTemplate { title: &self.path };
-                let footer = FooterTemplate {};
-                html_output.push_str(&header.render().unwrap());
-                html::push_html(&mut html_output, parser);
-                html_output.push_str(&footer.render().unwrap());
-                Poll::Ready(Some(Ok(Bytes::from(html_output))))
+        let next = self.body.poll_next(cx);
+        if let Poll::Ready(Some(Ok(chunk))) = next {
+            self.buffer.extend_from_slice(&chunk);
+            if !self.is_complete() {
+                cx.waker().clone().wake();
+                return Poll::Pending;
             }
-            Poll::Ready(Some(Err(e))) => Poll::Ready(Some(Err(e))),
-            Poll::Ready(None) => Poll::Ready(None),
-            Poll::Pending => Poll::Pending,
+            let s = &String::from_utf8_lossy(&self.buffer);
+            let parser = Parser::new_ext(s, Options::empty());
+            let mut html_output: String = String::with_capacity(s.len() * 3 / 2);
+            let header = HeaderTemplate { title: &self.path };
+            let footer = FooterTemplate {};
+            html_output.push_str(&header.render().unwrap());
+            html::push_html(&mut html_output, parser);
+            html_output.push_str(&footer.render().unwrap());
+            return Poll::Ready(Some(Ok(Bytes::from(html_output))));
         }
+        return next;
     }
 }
