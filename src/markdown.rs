@@ -52,53 +52,24 @@ pub struct MarkdownTransformerMiddleware<S> {
 impl<S, B> Service for MarkdownTransformerMiddleware<S>
 where
     S: Service<Request = ServiceRequest, Response = ServiceResponse<B>, Error = Error>,
+    S::Future: 'static,
     B: MessageBody,
 {
     type Request = ServiceRequest;
     type Response = ServiceResponse<MarkdownResponse<B>>;
     type Error = Error;
-    type Future = WrapperStream<S>;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>>>>;
 
     fn poll_ready(&mut self, cx: &mut Context) -> Poll<Result<(), Self::Error>> {
         self.service.poll_ready(cx)
     }
 
     fn call(&mut self, req: ServiceRequest) -> Self::Future {
-        WrapperStream {
-            fut: self.service.call(req),
-        }
-    }
-}
+        let fut = self.service.call(req);
 
-fn get_buffer_with_capacity(capacity: BodySize) -> BytesMut {
-    use BodySize::*;
-    match capacity {
-        Sized(capacity) => BytesMut::with_capacity(capacity),
-        Sized64(capacity) => BytesMut::with_capacity(capacity as usize),
-        _ => BytesMut::new(),
-    }
-}
+        Box::pin(async move {
+            let mut res = fut.await?;
 
-#[pin_project::pin_project]
-pub struct WrapperStream<S>
-where
-    S: Service,
-{
-    #[pin]
-    fut: S::Future,
-}
-
-impl<S, B> Future for WrapperStream<S>
-where
-    B: MessageBody,
-    S: Service<Request = ServiceRequest, Response = ServiceResponse<B>, Error = Error>,
-{
-    type Output = Result<ServiceResponse<MarkdownResponse<B>>, Error>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let res = futures::ready!(self.project().fut.poll(cx));
-
-        Poll::Ready(res.map(|mut res| {
             if res
                 .headers()
                 .get("content-type")
@@ -109,16 +80,25 @@ where
                     http::header::CONTENT_TYPE,
                     HeaderValue::from_static("text/html"),
                 );
-                return res.map_body(move |_, body| {
+                return Ok(res.map_body(move |_, body| {
                     let size = body.size();
                     ResponseBody::Body(MarkdownResponse::Active(MarkdownBody {
                         body,
                         buffer: get_buffer_with_capacity(size),
                     }))
-                });
+                }));
             }
-            res.map_body(move |_, body| ResponseBody::Body(MarkdownResponse::Inactive(body)))
-        }))
+            Ok(res.map_body(move |_, body| ResponseBody::Body(MarkdownResponse::Inactive(body))))
+        })
+    }
+}
+
+fn get_buffer_with_capacity(capacity: BodySize) -> BytesMut {
+    use BodySize::*;
+    match capacity {
+        Sized(capacity) => BytesMut::with_capacity(capacity),
+        Sized64(capacity) => BytesMut::with_capacity(capacity as usize),
+        _ => BytesMut::new(),
     }
 }
 
@@ -162,7 +142,7 @@ impl<B: MessageBody> MessageBody for MarkdownResponse<B> {
                     let s = &String::from_utf8_lossy(&response_body.buffer);
                     let parser = Parser::new_ext(s, Options::empty());
                     let mut html_output: String = String::with_capacity(s.len() * 3 / 2);
-                    let hello = HeaderTemplate { title: "world" }; // instantiate your struct
+                    let hello = HeaderTemplate { title: "world" };
                     html_output.push_str(&hello.render().unwrap());
                     html::push_html(&mut html_output, parser);
                     html_output.push_str("</body></html>");
