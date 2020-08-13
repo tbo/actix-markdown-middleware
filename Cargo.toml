@@ -1,5 +1,5 @@
 [package]
-name = "crusty"
+name = "Actix Markdown Middleware"
 version = "0.1.0"
 authors = ["Thomas Bonk <thomas@bonk.dev>"]
 edition = "2018"
